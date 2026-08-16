@@ -2,5 +2,8 @@ torch
 torchvision
 numpy
 Pillow
-flask
-flask-cors
+fastapi
+uvicorn[standard]
+python-multipart
+scikit-image
+matplotlib

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 def conv_block(in_c, out_c):
     return nn.Sequential(
         nn.Conv2d(in_c, out_c, 3, padding=1),
@@ -11,19 +12,16 @@ def conv_block(in_c, out_c):
         nn.ReLU(inplace=True)
     )
 
+
 class UNetGenerator(nn.Module):
     def __init__(self):
         super().__init__()
-
         self.enc1 = conv_block(3, 64)
         self.pool1 = nn.MaxPool2d(2)
-
         self.enc2 = conv_block(64, 128)
         self.pool2 = nn.MaxPool2d(2)
-
         self.enc3 = conv_block(128, 256)
         self.pool3 = nn.MaxPool2d(2)
-
         self.enc4 = conv_block(256, 512)
         self.pool4 = nn.MaxPool2d(2)
 
@@ -31,13 +29,10 @@ class UNetGenerator(nn.Module):
 
         self.up4 = nn.ConvTranspose2d(1024, 512, 2, stride=2)
         self.dec4 = conv_block(1024, 512)
-
         self.up3 = nn.ConvTranspose2d(512, 256, 2, stride=2)
         self.dec3 = conv_block(512, 256)
-
         self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
         self.dec2 = conv_block(256, 128)
-
         self.up1 = nn.ConvTranspose2d(128, 64, 2, stride=2)
         self.dec1 = conv_block(128, 64)
 
@@ -53,37 +48,37 @@ class UNetGenerator(nn.Module):
 
         d4 = self.up4(b)
         d4 = self.dec4(torch.cat([d4, e4], dim=1))
-
         d3 = self.up3(d4)
         d3 = self.dec3(torch.cat([d3, e3], dim=1))
-
         d2 = self.up2(d3)
         d2 = self.dec2(torch.cat([d2, e2], dim=1))
-
         d1 = self.up1(d2)
         d1 = self.dec1(torch.cat([d1, e1], dim=1))
 
         return torch.sigmoid(self.final(d1))
-class PatchDiscriminator(nn.Module):
-    def __init__(self):
-        super().__init__()   # ← MUST be indented
 
+
+class PatchDiscriminator(nn.Module):
+    """
+    PatchGAN-style discriminator. NOTE: not currently used by train_unet.py
+    (the model is trained with supervised Dice+BCE loss only). Kept here
+    for future adversarial-training experiments — see README "Future Work".
+    """
+
+    def __init__(self):
+        super().__init__()
         self.model = nn.Sequential(
             nn.Conv2d(4, 64, 4, 2, 1),
-            nn.Sigmoid(),
-
+            nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(64, 128, 4, 2, 1),
             nn.BatchNorm2d(128),
-            nn.Sigmoid(),
-
+            nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(128, 256, 4, 2, 1),
             nn.BatchNorm2d(256),
-            nn.Sigmoid(),
-
+            nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(256, 1, 4, padding=1)
         )
 
     def forward(self, img, mask):
         x = torch.cat([img, mask], dim=1)
         return self.model(x)
-    
