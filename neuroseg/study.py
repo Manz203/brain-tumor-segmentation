@@ -15,8 +15,6 @@ from .model import load_checkpoint
 def run(args):
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    if (out/"selection.json").exists():
-        raise RuntimeError("Selection already frozen in this directory. Use existing results; never tune on the test set.")
     if not torch.cuda.is_available() and not args.allow_cpu:
         raise RuntimeError("Enable GPU in Kaggle.")
     data = Path(args.data).resolve()
@@ -25,6 +23,20 @@ def run(args):
     if args.mlflow:
         from .tracking import configure
         tracking = configure(out, args.tracking_uri)
+    if (out/"selection.json").exists():
+        checkpoint=out/"best_model.pth"
+        if not checkpoint.is_file(): raise RuntimeError("Frozen selection checkpoint missing")
+        digest=hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        if (out/"test_metrics.json").is_file():
+            summary=json.loads((out/"test_metrics.json").read_text())
+            if summary.get("checkpoint_sha256")!=digest: raise RuntimeError("Evaluation checkpoint mismatch")
+        else:
+            summary=evaluate_checkpoint(checkpoint,data,out,batch=args.batch,workers=args.workers)
+        if tracking is not None and not (out/"registry.json").exists():
+            from .tracking import register_champion
+            register_champion(tracking,checkpoint,out,summary)
+        print("Using frozen selection; no new candidates or test-driven tuning.",flush=True)
+        return summary
     candidates = [(arch,args.lr) for arch in ("unet","attention_unet")]
     if args.tune:
         candidates += [(arch,args.lr/3) for arch in ("unet","attention_unet")]
@@ -77,7 +89,7 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument("--data",default="/tmp/neuroseg_processed")
     p.add_argument("--input",default="/kaggle/input")
-    p.add_argument("--out",default="/kaggle/working/neuroseg_results")
+    p.add_argument("--out",default="/kaggle/working/neuroseg_study")
     p.add_argument("--epochs",type=int,default=15)
     p.add_argument("--batch",type=int,default=8)
     p.add_argument("--width",type=int,default=32)

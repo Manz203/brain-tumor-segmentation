@@ -11,3 +11,9 @@ processed_dataset/
 *.mat
 *.zip
 mlruns/
+
+neuroseg_study/
+neuroseg_submission/
+mlflow.db
+mlflow_artifacts/
+tested-dependencies.txt

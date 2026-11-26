@@ -11,6 +11,8 @@ def configure(out, uri=None):
     uri = uri or "sqlite:///" + (out/"mlflow.db").as_posix()
     mlflow.set_tracking_uri(uri)
     mlflow.set_registry_uri(uri)
+    if mlflow.get_experiment_by_name("NeuroSeg V2") is None:
+        mlflow.create_experiment("NeuroSeg V2",artifact_location=(out/"mlflow_artifacts").as_uri())
     mlflow.set_experiment("NeuroSeg V2")
     return mlflow
 
@@ -40,8 +42,9 @@ def register_champion(mlflow, checkpoint, out, summary):
         import numpy as np
         example = np.zeros((1,1,ck["config"]["size"],ck["config"]["size"]),dtype=np.float32)
         info = mlflow.pytorch.log_model(model, name="segmentation_model", input_example=example,
-                                        registered_model_name="NeuroSeg")
-        version = info.registered_model_version
+                                        code_paths=[str(Path(__file__).parent)],
+                                        pip_requirements=["torch","numpy","mlflow>=3,<4"])
+        version = mlflow.register_model(info.model_uri,"NeuroSeg").version
         MlflowClient().set_registered_model_alias("NeuroSeg","champion",str(version))
         result={"model":"NeuroSeg","version":str(version),"alias":"champion",
                 "architecture":ck["config"].get("architecture","unet"),"run_id":info.run_id}

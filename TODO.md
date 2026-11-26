@@ -1,1 +1,12 @@
-# Backend-Frontend Connection ✅ FIXED CORS&#10;&#10;## Status&#10;✅ Backend: FastAPI running 127.0.0.1:8000/api/predict → 200 OK&#10;✅ Frontend: Full integration (upload → overlay + tumor %)&#10;❌ CORS: file:/// blocks fetch → Fixed below&#10;&#10;## Quick Fix (2 Terminals):&#10;**Terminal 1:** `uvicorn api:app --reload --port 8000` (API)&#10;**Terminal 2:** `python -m http.server 8001` (HTML)&#10;**Browser:** http://localhost:8001/index.html → Upload → ✅ Works!&#10;&#10;## Verify:&#10;- Terminal shows "POST /api/predict 200 OK"&#10;- Red tumor overlay + "Tumor Area: X.XX%" appears&#10;&#10;## Production (Optional api.py):&#10;```python&#10;from fastapi.staticfiles import StaticFiles&#10;app.mount("/", StaticFiles(directory=".", html=True))&#10;```&#10;→ Single `uvicorn api:app` serves everything.&#10;&#10;Model: best_generator.pth loaded ✅
+# V2 execution and verification checklist
+
+- [ ] Execute dataset recovery and verify source hashes/patient split in Kaggle.
+- [ ] Train U-Net and Attention U-Net; freeze champion using validation data.
+- [ ] Run optional hyperparameter candidates before final test selection.
+- [ ] Save actual held-out metrics, plots and model weights.
+- [ ] Verify MLflow experiment records and champion alias.
+- [ ] Verify latest CI, Docker build and container smoke test.
+- [ ] Extract result bundle and verify the browser demo with real trained weights.
+- [ ] Deploy privately to an authorized host and verify monitoring.
+- [ ] Add real external validation and tumor-negative data if available.
+- [ ] Review V2 changes and decide whether to merge into main.

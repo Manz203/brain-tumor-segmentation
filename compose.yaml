@@ -1,0 +1,24 @@
+services:
+  neuroseg:
+    build:
+      context: .
+      dockerfile: Dockerfile.v2
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      NEUROSEG_RESULTS: /models
+      NEUROSEG_LOAD_CANDIDATES: "1"
+    volumes:
+      - ./neuroseg_results:/models:ro
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["monitoring"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+volumes:
+  prometheus_data:
