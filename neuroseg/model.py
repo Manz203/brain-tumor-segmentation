@@ -40,7 +40,7 @@ def loss_fn(logits,target):
     return 0.5*nn.functional.binary_cross_entropy_with_logits(logits.float(),target)+0.5*(1-dice.mean())
 
 def scores(logits,target,threshold=0.5):
-    p=logits.sigmoid()>threshold
+    p=logits.float().sigmoid()>threshold
     t=target>0.5
     dims=(1,2,3)
     tp=(p&t).sum(dims).float()

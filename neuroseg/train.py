@@ -14,12 +14,13 @@ from .model import UNet,loss_fn,scores
 from .data import prepare,MRIDataset
 
 def run(args):
-    if args.size%16 or args.epochs<1 or args.batch<1: raise ValueError("Invalid training configuration")
+    if args.size<32 or args.size%16 or args.epochs<1 or args.batch<1 or args.width<1 or args.patience<1 or args.workers<0: raise ValueError("Invalid training configuration")
     random.seed(42); np.random.seed(42); torch.manual_seed(42)
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(42)
     torch.backends.cudnn.benchmark=False
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type!="cuda" and not args.allow_cpu: raise RuntimeError("Enable a Kaggle GPU first")
+    print(f"Device: {device}; GPU count: {torch.cuda.device_count()}",flush=True)
     out=Path(args.out); out.mkdir(parents=True,exist_ok=True)
     root=Path(args.data)
     df=prepare(root,Path(args.input))
