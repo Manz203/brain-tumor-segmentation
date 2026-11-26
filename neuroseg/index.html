@@ -1,0 +1,19 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>NeuroSeg V2</title>
+<style>body{font:16px system-ui;background:#f7f3e9;color:#27231e;margin:0}main{max-width:960px;margin:auto;padding:35px 24px}h1{font:3rem Georgia;margin-bottom:8px}button{background:#30281e;color:white;border:0;padding:12px 20px;border-radius:8px;cursor:pointer}button:disabled{opacity:.5}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:24px 0}.panel{background:white;border:1px solid #ddd2bf;padding:16px;border-radius:12px}.panel img{width:100%;object-fit:contain;aspect-ratio:1;background:#eee}small{color:#665d50}input{margin:12px 0}#status{min-height:24px}</style>
+<main><small>NEUROSEG / RESEARCH PROTOTYPE</small><h1>Brain MRI segmentation</h1><p>Patient-separated U-Net training and pixel-wise predicted masks.</p><p><strong>Research only — not for medical diagnosis.</strong> Use de-identified, supported 2D MRI images, not patient records.</p>
+<p id="model">Checking model availability…</p><form id="form"><label for="file">Select an MRI image (PNG, JPEG or TIFF)</label><br><input id="file" type="file" accept=".png,.jpg,.jpeg,.tif,.tiff" required><br><button id="run">Run segmentation</button></form><p id="status" role="status" aria-live="polite"></p>
+<section id="results" hidden><div class="grid"><div class="panel">Original MRI<img id="original" alt="Original MRI"></div><div class="panel">Predicted mask<img id="mask" alt="Predicted binary mask"></div><div class="panel">Overlay<img id="overlay" alt="Predicted mask overlay"></div></div><p id="area"></p><a id="download" download="predicted_mask.png">Download predicted mask</a></section></main>
+<script>
+const by=id=>document.getElementById(id);
+fetch('/api/model/info').then(r=>r.ok?r.json():Promise.reject()).then(d=>by('model').textContent='Checkpoint epoch '+d.epoch+' | Validation Dice '+d.validation_dice.toFixed(4)).catch(()=>by('model').textContent='No trained checkpoint installed yet.');
+let url;
+by('file').addEventListener('change',()=>{by('results').hidden=true;by('status').textContent='';});
+by('form').addEventListener('submit',async e=>{
+e.preventDefault();const file=by('file').files[0];if(!file)return;by('run').disabled=true;by('file').disabled=true;by('results').hidden=true;by('status').textContent='Processing…';
+try{const fd=new FormData();fd.append('file',file);const r=await fetch('/api/predict',{method:'POST',body:fd});const d=await r.json();if(!r.ok)throw Error(d.detail||'Prediction failed');
+if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(file);by('original').src=url;
+by('mask').src='data:image/png;base64,'+d.mask_b64;by('overlay').src='data:image/png;base64,'+d.overlay_b64;
+by('download').href=by('mask').src;by('area').textContent='Predicted foreground area: '+d.predicted_foreground_area_pct.toFixed(2)+'% of image (not tumor volume or diagnostic confidence).';by('results').hidden=false;by('status').textContent='Prediction complete.';
+}catch(err){by('status').textContent=err.message;}finally{by('run').disabled=false;by('file').disabled=false;}
+});
+</script></html>

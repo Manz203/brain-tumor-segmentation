@@ -1,0 +1,13 @@
+torch>=2.4
+torchvision>=0.19
+numpy
+pandas
+h5py
+scikit-learn
+Pillow
+matplotlib
+fastapi
+uvicorn
+python-multipart
+pytest
+httpx
