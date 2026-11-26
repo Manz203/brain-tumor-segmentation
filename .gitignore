@@ -4,3 +4,10 @@ __pycache__/
 Dataset/
 *.db
 *.pyc
+.venv/
+.pytest_cache/
+neuroseg_results/
+processed_dataset/
+*.mat
+*.zip
+mlruns/

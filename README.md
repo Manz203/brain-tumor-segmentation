@@ -1,109 +1,50 @@
-# Brain Tumor Segmentation using U-Net
+# NeuroSeg V2 — Brain tumor segmentation
 
-A deep learning system for automatic brain tumor segmentation from MRI scans, using a U-Net encoder-decoder trained with a supervised Dice + BCE loss. Includes a single-image inference script, a FastAPI backend, and a web-based interface for uploading scans and viewing predicted segmentation masks.
+Research and educational prototype for binary 2D brain MRI segmentation. Not a clinically validated diagnostic tool.
 
-## Overview
+## Quick start (Kaggle)
 
-Brain tumor segmentation is a critical task in medical imaging, helping clinicians localize and quantify tumor regions from MRI scans. This project implements an encoder-decoder U-Net architecture and trains it directly against ground-truth masks with a combined Dice + Binary Cross-Entropy loss.
+Enable GPU and Internet in a private Kaggle notebook. Run the cell in [03_neuroseg_end_to_end.ipynb](Notebooks/03_neuroseg_end_to_end.ipynb). No manually transferred dataset archive is required. The script uses a previously saved processed ZIP or attached original MATLAB files when available, otherwise it attempts a sparse clone of the [dataset mirror](https://github.com/jasonnan2/Deep-Learning-MRI-tumor). The mirror file count was checked; end-to-end download and training still require verification in Kaggle. If access fails, attach the original MATLAB files as an input rather than changing the patient split.
 
-A PatchGAN discriminator (`PatchDiscriminator` in `model.py`) is included in the codebase as a starting point for future adversarial-training experiments, but **the model that produced the results below was trained without it** — plain supervised training performed better in practice (see `train_unet.py`'s docstring). The "Future Work" section below covers re-introducing adversarial training properly.
+The default run trains up to 15 epochs and saves best/last checkpoints, validation history, plots and the pseudonymous split manifest in `/kaggle/working/neuroseg_results`. Use Save & Run All to persist results. GPU training is not yet verified; no V2 scores are claimed. To evaluate the frozen baseline after model selection, rerun the training command without `--skip-test` or resume with the saved last checkpoint and existing best checkpoint in the output directory. Do not tune the model on test results.
 
-## Architecture
+## Dataset and methodology
 
-**Generator (UNetGenerator)** — A 4-level U-Net with skip connections:
-- Encoder: 4 downsampling blocks (64 → 128 → 256 → 512 channels), each with two Conv-BatchNorm-ReLU layers followed by max pooling
-- Bottleneck: 1024-channel convolutional block
-- Decoder: 4 upsampling blocks using transposed convolutions, with skip connections concatenating corresponding encoder features
-- Output: 1-channel sigmoid activation producing a binary segmentation mask
-- **Total trainable parameters: ~31.04M**
+Source: [Cheng brain tumor dataset](https://doi.org/10.6084/m9.figshare.1512427). Cite the original authors and check dataset terms before redistribution. Original MATLAB files contain T1 contrast-enhanced 2D MRI slices, binary masks and patient identifiers. Prior Kaggle preprocessing execution verified:
 
-**Discriminator (PatchDiscriminator)** — A PatchGAN-style convolutional discriminator that takes the concatenated image and mask (4 channels) and outputs a patch-wise real/fake prediction. Defined in `model.py` but not used by the current training pipeline.
+| Split | Slices | Patients |
+|---|---:|---:|
+| Train | 2124 | 163 |
+| Validation | 633 | 46 |
+| Test | 307 | 24 |
 
-## Dataset
+Total: 3064 slices from 233 patients. No patient overlap. Stratified patient-level split with seed 42. The source mirror is checked against these counts and source metadata; identical files and membership have not been independently verified against the original archive. The test set is held out for final evaluation. All original data examples contain tumors; generalization to tumor-negative cases is not established.
 
-- Training samples: 2,799
-- Validation samples: 1,119
-- Images resized to 256×256
-- Custom train/val/test split via `split_dataset.py` (seeded for reproducibility; writes `split_manifest.json` so the exact split can be audited later)
+Preprocessing: grayscale, foreground percentile normalization (1–99), 256x256 training resolution, nearest-neighbor mask resizing, synchronized flips/rotations on training only. U-Net with 32 initial channels, logits, Dice+BCEWithLogits, AdamW, learning-rate scheduling, mixed precision on CUDA, early stopping, sample-weighted metrics. The seed improves reproducibility but does not guarantee bitwise reproducibility. Resume restores model/optimizer/scheduler/scaler, not random generator state.
 
-## Training
+Evaluation reports Dice, IoU, precision, recall, specificity, patient-macro and slice-macro averages, subgroup metrics and example failure cases.
 
-Trained for 50 epochs on GPU (CUDA) with a learning rate of 1e-3, Dice+BCE loss, `ReduceLROnPlateau` scheduling, and early stopping on validation Dice.
+## Local web demo
 
-Validation Dice score progression (selected epochs):
+After Kaggle training, download `best_unet.pth` into `neuroseg_results/`. In the repository root:
 
-| Epoch | Train Dice | Val Dice |
-|-------|-----------|----------|
-| 1  | 0.2086 | 0.2788 |
-| 5  | 0.4571 | 0.4775 |
-| 10 | 0.5585 | 0.5848 |
-| 12 | 0.5827 | **0.6154** |
-| 14 | 0.5926 | **0.6103** |
-
-Best validation Dice achieved: **~0.62**.
-
-## Project Structure
-
-```
-brain-tumor-segmentation/
-├── model.py            # U-Net generator (used) and PatchGAN discriminator (unused, future work)
-├── train_unet.py        # Training script — the canonical training entrypoint
-├── evaluate_unet.py      # Full test-set evaluation with Dice/IoU/Acc/SSIM/PSNR + visual grid
-├── inference.py          # Run inference on a single new MRI image
-├── split_dataset.py      # Train/val/test dataset splitting (seeded, writes a manifest)
-├── api.py                # Full FastAPI backend — /api/predict + /api/evaluate
-├── app.py                # Minimal FastAPI backend — /api/predict only
-├── index.html            # Frontend interface (JS is inline in this file)
-├── Notebooks/             # Exploratory notebooks and experiments
-└── requirements.txt
+```powershell
+pip install -r requirements-v2.txt
+python -m uvicorn neuroseg.api:app --port 8000
 ```
 
-## Setup & Usage
+Open http://127.0.0.1:8000. Supports de-identified grayscale MRI PNG/JPEG/TIFF exports; distribution may differ from raw MATLAB scans. Uploaded images are not intentionally persisted. Inference normalization is applied once to uploaded image; already normalized training PNGs may be normalized again and differ from training. No diagnosis, tumor volume or calibrated confidence is provided.
 
-### Install dependencies
-```
-pip install -r requirements.txt
-```
+## Tests and container
 
-### Split the dataset
-```
-python split_dataset.py --base_dir Dataset
-```
+`python -m pytest -q tests`
 
-### Train the model
-```
-python train_unet.py
-```
+`docker build -f Dockerfile.v2 -t neuroseg-v2 .`
 
-### Run inference on a new image
-```
-python inference.py --image path/to/scan.png
-```
-Saves `<name>_mask.png` and `<name>_overlay.png` next to the input (or to `--out_dir` if given). Prints tumour area and model confidence — no ground truth needed.
+`docker run --rm -p 8000:8000 -v "${PWD}/neuroseg_results:/models:ro" neuroseg-v2`
 
-### Evaluate on a labelled test set
-```
-python evaluate_unet.py --checkpoint best_unet.pth --test_dir Dataset/test
-```
-Prints Dice / IoU / Pixel Accuracy / SSIM / PSNR and saves a visual grid to `eval_results.png`.
+The new code lives in `neuroseg/`. Root-level V1 scripts and old notebook artifacts are retained for reference only; do not use their old checkpoints with the new model. Historical V1 validation Dice of about 0.62 is not comparable with V2 due to the changed split and preprocessing.
 
-### Run the web app
-```
-python app.py
-```
-or, for the full API with the `/api/evaluate` endpoint:
-```
-uvicorn api:app --reload --port 8000
-```
-Then open `index.html` in your browser to upload MRI scans and view predicted segmentation masks.
+## Status and limitations
 
-## Model Weights
-
-Trained model checkpoints (`best_unet.pth`, `final_generator.pth`, `best_generator.pth`) are not included in this repository due to size (~125MB each), but can be provided on request or via [Google Drive link].
-
-## Future Work
-
-- Re-introduce adversarial training: wire `PatchDiscriminator` back into the training loop with a proper adversarial loss weight, and A/B test it against the current supervised-only baseline (0.62 Dice) instead of assuming it will help
-- Extend training beyond 50 epochs with a more aggressive LR schedule
-- Add multi-class segmentation for tumor sub-regions (edema, enhancing tumor, necrotic core)
-- Deploy as a hosted web demo (e.g. Hugging Face Spaces)
+Implementation ready for execution; dataset recovery, full GPU training, test results, actual deployment and CI execution remain to be verified. Dependencies specify minimums rather than a tested lockfile. Attention U-Net, MLflow integration, external validation, and deployment are future work. No fabricated metrics or model weights are included.
