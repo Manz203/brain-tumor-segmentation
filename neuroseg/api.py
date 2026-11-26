@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from .model import load_checkpoint
@@ -42,6 +42,7 @@ async def lifespan(app):
         app.state.models[key]=(model,cfg,info)
     app.state.default=next(iter(app.state.models),None)
     app.state.report={}
+    app.state.sample_root=Path(__file__).with_name("samples")
     metrics=root/"test_metrics.json"
     if metrics.is_file():
         report=json.loads(metrics.read_text())
@@ -64,9 +65,23 @@ def info():
             **app.state.models[app.state.default][2]}
 
 @app.get("/api/model/performance")
-def performance():
-    if not app.state.report: raise HTTPException(404,"No verified evaluation report for installed checkpoint")
+def performance(architecture:str|None=None):
+    if not app.state.report or (architecture and architecture!=app.state.report.get("architecture")): raise HTTPException(404,"No verified evaluation report for installed checkpoint")
     return app.state.report
+
+@app.get("/api/samples")
+def samples():
+    manifest=app.state.sample_root/"manifest.json"
+    return json.loads(manifest.read_text()) if manifest.is_file() else {"samples":[]}
+
+@app.get("/api/samples/{sample_id}/{kind}")
+def sample_file(sample_id:str,kind:str):
+    allowed={s["id"] for s in samples()["samples"]}
+    if sample_id not in allowed or kind not in {"image","mask"}:
+        raise HTTPException(404,"Sample unavailable")
+    path=app.state.sample_root/f"{sample_id}_{kind}.png"
+    if not path.is_file(): raise HTTPException(404,"Sample unavailable")
+    return FileResponse(path,media_type="image/png")
 
 @app.get("/api/monitoring")
 def monitoring(): return app.state.monitor.snapshot()
@@ -92,7 +107,7 @@ async def predict_endpoint(file:UploadFile=File(...),ground_truth:UploadFile|Non
         except (ValueError,OSError,Image.DecompressionBombError) as exc:
             raise HTTPException(400,str(exc)) from exc
         ok=True
-        return {**result,"model":model_info}
+        return {**result,"model":model_info,"request_ms":(time.perf_counter()-started)*1000}
     finally:
         app.state.monitor.observe(time.perf_counter()-started,ok)
         await file.close()

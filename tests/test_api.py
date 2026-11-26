@@ -35,6 +35,9 @@ def test_prediction_and_metrics(tmp_path,monkeypatch):
         assert r.status_code==200,r.text
         assert 0<=r.json()["comparison"]["dice"]<=1
         assert "mask_b64" in r.json()
+        assert "error_map_b64" in r.json()
+        assert r.json()["inference_ms"]>=0
+        assert r.json()["comparison"]["tp"]+r.json()["comparison"]["fp"]+r.json()["comparison"]["fn"]+r.json()["comparison"]["tn"]==1024
         assert client.post("/api/predict",files={"file":("bad.png",b"bad","image/png")}).status_code==400
         assert client.get("/api/monitoring").json()["errors"]==1
         assert "neuroseg_predictions_total 2" in client.get("/metrics").text

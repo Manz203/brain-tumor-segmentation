@@ -1,0 +1,85 @@
+name: Refresh trained NeuroSeg dashboard
+on:
+  push:
+    branches: [neuroseg-v2]
+    paths:
+      - '.github/workflows/refresh-trained-package.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: NeuroSeg-trained-windows
+          run-id: 45863663220
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/NeuroSeg
+      - run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements-v2.txt
+      - run: python -m pytest -q tests
+      - name: Prepare attributed sample pairs
+        run: python -m scripts.prepare_demo_samples
+      - name: Replace dashboard only and verify original weights
+        run: |
+          python - <<'PY'
+          import os, json, hashlib, shutil
+          from pathlib import Path
+          from fastapi.testclient import TestClient
+          root=Path(os.environ["RUNNER_TEMP"])/"NeuroSeg"
+          result=root/"neuroseg_results"
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          before={str(p.relative_to(result)):sha(p) for p in result.rglob("*.pth")}
+          report=json.loads((result/"test_metrics.json").read_text())
+          assert before["best_model.pth"]==report["checkpoint_sha256"]
+          os.environ["NEUROSEG_RESULTS"]=str(result)
+          os.environ["NEUROSEG_LOAD_CANDIDATES"]="1"
+          from neuroseg.api import app
+          verification=[]
+          with TestClient(app) as client:
+              assert client.get("/health").json()["ready"]
+              assert client.get("/api/model/performance").status_code==200
+              assert client.get("/api/model/performance?architecture=attention_unet").status_code==404
+              samples=client.get("/api/samples").json()["samples"]
+              assert samples,"No demo samples downloaded"
+              for sample in samples:
+                  id=sample["id"]
+                  image=client.get(f"/api/samples/{id}/image")
+                  mask=client.get(f"/api/samples/{id}/mask")
+                  assert image.status_code==mask.status_code==200
+                  for model in client.get("/api/model/info").json()["models"]:
+                      r=client.post("/api/predict",files={"file":("image.png",image.content,"image/png"),"ground_truth":("mask.png",mask.content,"image/png")},data={"architecture":model["architecture"],"source":"preprocessed"})
+                      assert r.status_code==200,r.text
+                      d=r.json()
+                      assert d["error_map_b64"] and d["inference_ms"]>=0
+                      verification.append({"sample":id,"architecture":model["architecture"],"dice":d["comparison"]["dice"],"iou":d["comparison"]["iou"]})
+              r=client.post("/api/predict",files={"file":("image.png",image.content,"image/png")},data={"source":"preprocessed"})
+              assert r.status_code==200 and "comparison" not in r.json()
+          shutil.copytree("neuroseg",root/"neuroseg",dirs_exist_ok=True,ignore=shutil.ignore_patterns("__pycache__","*.pyc"))
+          shutil.copy2("README.md",root/"README.md")
+          assert before=={str(p.relative_to(result)):sha(p) for p in result.rglob("*.pth")}
+          (root/"dashboard_verification.json").write_text(json.dumps({"weights_unchanged":True,"live_predictions":verification},indent=2))
+          print(json.dumps(verification,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroSeg-trained-windows-improved
+          path: ${{ runner.temp }}/NeuroSeg/
+          retention-days: 30
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroSeg-dashboard-update-only
+          path: neuroseg/
+          retention-days: 30
+          if-no-files-found: error
