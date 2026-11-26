@@ -17,3 +17,5 @@ neuroseg_submission/
 mlflow.db
 mlflow_artifacts/
 tested-dependencies.txt
+
+.neuroseg-env/

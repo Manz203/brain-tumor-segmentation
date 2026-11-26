@@ -1,0 +1,77 @@
+name: Train and package working NeuroSeg
+on:
+  push:
+    branches: [neuroseg-v2]
+    paths:
+      - '.github/workflows/train-and-package.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: neuroseg-trained-package-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-v2.txt
+      - name: Run tests before training
+        run: python -m pytest -q tests
+      - name: Train two real CPU models and evaluate champion
+        run: |
+          python -u -m neuroseg.study --allow-cpu --data "$RUNNER_TEMP/neuroseg_processed" --input "$RUNNER_TEMP/empty_input" --out "$RUNNER_TEMP/neuroseg_results" --size 128 --width 16 --batch 16 --workers 2 --epochs 12
+      - name: Track actual runs and register model (optional)
+        continue-on-error: true
+        run: |
+          python -m pip install -r requirements-mlops.txt
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import pandas as pd
+          from neuroseg.tracking import configure, log_candidate, register_champion
+          out=Path(os.environ["RUNNER_TEMP"])/"neuroseg_results"
+          m=configure(out)
+          for row in pd.read_csv(out/"model_comparison.csv").to_dict("records"):
+              directory=out/row["candidate"]
+              log_candidate(m,directory,json.loads((directory/"experiment.json").read_text()))
+          register_champion(m,out/"best_model.pth",out,json.loads((out/"test_metrics.json").read_text()))
+          PY
+      - name: Verify real prediction and assemble portable Windows project
+        run: |
+          python -m scripts.package_trained_project --results "$RUNNER_TEMP/neuroseg_results" --data "$RUNNER_TEMP/neuroseg_processed" --dest "$RUNNER_TEMP/NeuroSeg"
+      - name: Upload complete working project
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeuroSeg-trained-windows
+          path: ${{ runner.temp }}/NeuroSeg/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Write actual evaluation to workflow summary
+        run: |
+          echo '## Held-out evaluation (CPU configuration: 128 px, width 16)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/neuroseg_results/test_metrics.json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve genuine partial results for troubleshooting
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeuroSeg-partial-training
+          path: |
+            ${{ runner.temp }}/neuroseg_results/**/training_history.csv
+            ${{ runner.temp }}/neuroseg_results/**/best_unet.pth
+            ${{ runner.temp }}/neuroseg_results/**/experiment.json
+          if-no-files-found: ignore
+          retention-days: 7
