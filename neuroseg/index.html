@@ -1,19 +1,20 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>NeuroSeg V2</title>
-<style>body{font:16px system-ui;background:#f7f3e9;color:#27231e;margin:0}main{max-width:960px;margin:auto;padding:35px 24px}h1{font:3rem Georgia;margin-bottom:8px}button{background:#30281e;color:white;border:0;padding:12px 20px;border-radius:8px;cursor:pointer}button:disabled{opacity:.5}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:24px 0}.panel{background:white;border:1px solid #ddd2bf;padding:16px;border-radius:12px}.panel img{width:100%;object-fit:contain;aspect-ratio:1;background:#eee}small{color:#665d50}input{margin:12px 0}#status{min-height:24px}</style>
-<main><small>NEUROSEG / RESEARCH PROTOTYPE</small><h1>Brain MRI segmentation</h1><p>Patient-separated U-Net training and pixel-wise predicted masks.</p><p><strong>Research only — not for medical diagnosis.</strong> Use de-identified, supported 2D MRI images, not patient records.</p>
-<p id="model">Checking model availability…</p><form id="form"><label for="file">Select an MRI image (PNG, JPEG or TIFF)</label><br><input id="file" type="file" accept=".png,.jpg,.jpeg,.tif,.tiff" required><br><button id="run">Run segmentation</button></form><p id="status" role="status" aria-live="polite"></p>
-<section id="results" hidden><div class="grid"><div class="panel">Original MRI<img id="original" alt="Original MRI"></div><div class="panel">Predicted mask<img id="mask" alt="Predicted binary mask"></div><div class="panel">Overlay<img id="overlay" alt="Predicted mask overlay"></div></div><p id="area"></p><a id="download" download="predicted_mask.png">Download predicted mask</a></section></main>
-<script>
-const by=id=>document.getElementById(id);
-fetch('/api/model/info').then(r=>r.ok?r.json():Promise.reject()).then(d=>by('model').textContent='Checkpoint epoch '+d.epoch+' | Validation Dice '+d.validation_dice.toFixed(4)).catch(()=>by('model').textContent='No trained checkpoint installed yet.');
-let url;
-by('file').addEventListener('change',()=>{by('results').hidden=true;by('status').textContent='';});
-by('form').addEventListener('submit',async e=>{
-e.preventDefault();const file=by('file').files[0];if(!file)return;by('run').disabled=true;by('file').disabled=true;by('results').hidden=true;by('status').textContent='Processing…';
-try{const fd=new FormData();fd.append('file',file);const r=await fetch('/api/predict',{method:'POST',body:fd});const d=await r.json();if(!r.ok)throw Error(d.detail||'Prediction failed');
-if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(file);by('original').src=url;
-by('mask').src='data:image/png;base64,'+d.mask_b64;by('overlay').src='data:image/png;base64,'+d.overlay_b64;
-by('download').href=by('mask').src;by('area').textContent='Predicted foreground area: '+d.predicted_foreground_area_pct.toFixed(2)+'% of image (not tumor volume or diagnostic confidence).';by('results').hidden=false;by('status').textContent='Prediction complete.';
-}catch(err){by('status').textContent=err.message;}finally{by('run').disabled=false;by('file').disabled=false;}
-});
-</script></html>
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeuroSeg | MRI research workspace</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body><header><a href="/" class="brand">N<span>●</span> NeuroSeg</a><span class="tag">Research workspace / V2</span></header>
+<main><section class="hero"><div><p class="eyebrow">COMPUTER VISION • MEDICAL IMAGING</p><h1>Brain MRI<br><em>segmentation.</em></h1><p>Explore pixel-level predictions from U-Net architectures trained with patient-separated data.</p></div><div class="status"><span id="status-dot"></span><strong id="model-status">Checking model…</strong><small id="model-version">Loading checkpoint details</small></div></section>
+<p class="notice">Research prototype only. Not for diagnosis. Use de-identified 2D MRI exports, not patient records.</p>
+<section class="workspace"><form id="form" class="panel"><h2>01 / Input</h2><label class="drop" id="drop" for="file"><span>＋</span><strong>Choose or drop an MRI</strong><small>PNG, JPEG, TIFF • maximum 10 MB</small><input type="file" id="file" accept=".png,.jpg,.jpeg,.tif,.tiff" required></label><p id="filename" class="muted"></p>
+<label for="gt">Ground truth (optional binary mask)</label><input id="gt" type="file" accept=".png,.tif,.tiff">
+<label for="model">Architecture</label><select id="model" required></select>
+<label for="source">Image normalization</label><select id="source"><option value="raw">Raw image — normalize foreground</option><option value="preprocessed">Already normalized 8-bit MRI</option></select>
+<button id="run" type="submit" disabled>Run segmentation →</button><p id="status" role="status" aria-live="polite"></p></form>
+<section class="panel results"><div class="row"><h2>02 / Results</h2><button class="secondary" id="report" disabled>Export JSON report</button></div><p id="placeholder" class="muted">Upload an image to display predictions.</p><div id="result" hidden><div class="images">
+<figure><figcaption>Normalized MRI</figcaption><div class="scan"><img id="original" alt="Normalized MRI"></div></figure>
+<figure><figcaption>Predicted mask</figcaption><div class="scan"><img id="mask" alt="Predicted binary mask"></div></figure>
+<figure><figcaption>Overlay</figcaption><div class="scan stack"><img id="overlay-base" alt="MRI overlay base"><img id="overlay-mask" alt="Predicted region"></div></figure>
+<figure id="ground-panel" hidden><figcaption>Ground truth</figcaption><div class="scan"><img id="ground" alt="Ground truth mask"></div></figure></div>
+<div class="controls"><label for="opacity">Overlay opacity <output id="opacity-value">45%</output></label><input id="opacity" type="range" min="0" max="100" value="45"><label for="zoom">Image zoom <output id="zoom-value">100%</output></label><input id="zoom" type="range" min="100" max="200" value="100"></div>
+<div class="metrics"><div><small>Predicted image area</small><strong id="area">—</strong></div><div><small>Dice (ground truth)</small><strong id="dice">—</strong></div><div><small>IoU (ground truth)</small><strong id="iou">—</strong></div></div><p class="muted">Area is a fraction of the image, not tumor volume or diagnostic confidence.</p><a class="button" id="download" download="predicted_mask.png">Download mask</a></div></section></section>
+<section class="panel performance"><h2>03 / Held-out evaluation</h2><p id="perf-note" class="muted">No verified test results loaded.</p><div id="perf" class="metrics"></div><p class="muted">Patient-macro scores; tumor-positive 2D slices only. Not clinical performance.</p></section>
+<footer>NeuroSeg • U-Net / Attention U-Net • educational research</footer></main><script src="/static/script.js"></script></body></html>
