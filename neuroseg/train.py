@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from .model import UNet,loss_fn,scores
+from .model import build_model,loss_fn,scores
 from .data import prepare,MRIDataset
 
 def run(args):
@@ -33,16 +33,18 @@ def run(args):
         loaders[split]=DataLoader(MRIDataset(root,df,split,args.size),batch_size=args.batch,
                                    shuffle=split=="train",num_workers=args.workers,
                                    pin_memory=device.type=="cuda")
-    model=UNet(args.width).to(device)
+    core=build_model(args.architecture,args.width).to(device)
+    model=torch.nn.DataParallel(core) if args.multi_gpu and torch.cuda.device_count()>1 else core
     opt=torch.optim.AdamW(model.parameters(),lr=args.lr,weight_decay=1e-4)
     scheduler=torch.optim.lr_scheduler.ReduceLROnPlateau(opt,mode="max",patience=3,factor=.5)
     scaler=torch.amp.GradScaler("cuda",enabled=device.type=="cuda")
-    cfg={"width":args.width,"size":args.size,"threshold":.5,"normalization":"foreground_percentile_1_99","manifest_sha256":digest}
+    cfg={"architecture":args.architecture,"width":args.width,"size":args.size,"threshold":.5,"normalization":"foreground_percentile_1_99","manifest_sha256":digest}
     best=-1.; stale=0; history=[]; start=1
     if args.resume:
         ck=torch.load(args.resume,map_location="cpu",weights_only=True)
-        if ck["config"]!=cfg: raise ValueError("Resume configuration differs")
-        model.load_state_dict(ck["model"],strict=True); opt.load_state_dict(ck["optimizer"])
+        previous=dict(ck["config"]); previous.setdefault("architecture","unet")
+        if previous!=cfg: raise ValueError("Resume configuration differs")
+        core.load_state_dict(ck["model"],strict=True); opt.load_state_dict(ck["optimizer"])
         scheduler.load_state_dict(ck["scheduler"]); scaler.load_state_dict(ck["scaler"])
         history=ck["history"]; best=ck["best"]; stale=ck["stale"]; start=ck["epoch"]+1
         if not (out/"best_unet.pth").exists(): raise RuntimeError("Resume requires existing best_unet.pth in output directory")
@@ -60,7 +62,7 @@ def run(args):
             n=x.size(0); total+=n; loss_sum+=loss.item()*n
             dice_sum+=scores(logits.detach(),y)["dice"].sum().item()
         return loss_sum/total,dice_sum/total
-    for e in range(start,args.epochs+1):
+    for e in range(start,args.epochs+1) if stale<args.patience else ():
         tl,td=epoch("train"); vl,vd=epoch("val"); scheduler.step(vd)
         row={"epoch":e,"train_loss":tl,"train_dice":td,"val_loss":vl,"val_dice":vd,"lr":opt.param_groups[0]["lr"]}
         history.append(row); print(json.dumps(row),flush=True)
@@ -68,8 +70,8 @@ def run(args):
         if improved: best=vd; stale=0
         else: stale+=1
         if improved:
-            torch.save({"model":model.state_dict(),"config":cfg,"epoch":e,"val_dice":vd},out/"best_unet.pth")
-        torch.save({"model":model.state_dict(),"config":cfg,"epoch":e,"best":best,"stale":stale,
+            torch.save({"model":core.state_dict(),"config":cfg,"epoch":e,"val_dice":vd},out/"best_unet.pth")
+        torch.save({"model":core.state_dict(),"config":cfg,"epoch":e,"best":best,"stale":stale,
                     "optimizer":opt.state_dict(),"scheduler":scheduler.state_dict(),"scaler":scaler.state_dict(),"history":history},out/"last_unet.pth")
         pd.DataFrame(history).to_csv(out/"training_history.csv",index=False)
         if stale>=args.patience: break
@@ -85,39 +87,16 @@ def run(args):
     print("Best validation Dice:",ck["val_dice"],flush=True)
     if args.skip_test:
         print("Test set reserved for final model selection."); return
-    rows=[]; examples=[]
-    with torch.inference_mode():
-        for x,y,names,groups,types in loaders["test"]:
-            logits=model(x.to(device)); y_device=y.to(device)
-            m=scores(logits,y_device)
-            pred=(logits.sigmoid()>.5).cpu().numpy()
-            for i,name in enumerate(names):
-                row={"filename":name,"patient_group":groups[i],"tumor_type":types[i]}
-                row.update({key:float(v[i].item()) for key,v in m.items()}); rows.append(row)
-                examples.append((row["dice"],x[i,0].numpy(),y[i,0].numpy(),pred[i,0],name))
-    result=pd.DataFrame(rows); result.to_csv(out/"per_sample_metrics.csv",index=False)
-    cols=["dice","iou","precision","recall","specificity"]
-    summary={"best_epoch":ck["epoch"],"best_validation_dice":ck["val_dice"],"test_images":len(result),
-             "test_patients":result.patient_group.nunique(),"slice_macro":result[cols].mean().to_dict(),
-             "patient_macro":result.groupby("patient_group")[cols].mean().mean().to_dict(),
-             "by_tumor_type":result.groupby("tumor_type")[cols].mean().to_dict(orient="index"),
-             "limitations":"Tumor-positive 2D slices only; no clinical validation."}
-    (out/"test_metrics.json").write_text(json.dumps(summary,indent=2))
-    examples.sort(key=lambda r:r[0])
-    selected=examples[:3]+examples[-3:]
-    fig,ax=plt.subplots(len(selected),4,figsize=(12,3*len(selected)),squeeze=False)
-    for a,(dice,img,gt,pred,name) in zip(ax,selected):
-        a[0].imshow(img,cmap="gray"); a[1].imshow(gt,cmap="gray"); a[2].imshow(pred,cmap="gray")
-        a[3].imshow(img,cmap="gray"); a[3].imshow(np.ma.masked_where(~pred,pred),cmap="autumn",alpha=.45)
-        for axis,title in zip(a,[name,"Ground truth",f"Prediction Dice={dice:.3f}","Overlay"]): axis.set_title(title); axis.axis("off")
-    fig.tight_layout(); fig.savefig(out/"segmentation_examples.png",dpi=120); plt.close(fig)
-    print(json.dumps(summary,indent=2),flush=True)
+    from .evaluate import evaluate_checkpoint
+    evaluate_checkpoint(out/"best_unet.pth",root,out,device=device,batch=args.batch,workers=args.workers)
 
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--data",default="/tmp/neuroseg_processed")
     p.add_argument("--input",default="/kaggle/input")
     p.add_argument("--out",default="/kaggle/working/neuroseg_results")
+    p.add_argument("--architecture",choices=["unet","attention_unet"],default="unet")
+    p.add_argument("--multi-gpu",action="store_true",help="Optional DataParallel on multiple CUDA devices")
     p.add_argument("--epochs",type=int,default=15)
     p.add_argument("--batch",type=int,default=8)
     p.add_argument("--size",type=int,default=256)

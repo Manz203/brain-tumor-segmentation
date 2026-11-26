@@ -60,7 +60,9 @@ def source_files(input_dir,cache):
     # Prefer a complete original dataset already attached as input.
     files=sorted((p for p in input_dir.rglob("*.mat") if p.stem.isdigit()),key=lambda p:p.name) if input_dir.exists() else []
     if len(files)==3064 and {p.name for p in files}==set(HASHES):
-        print("Using attached original MATLAB files.",flush=True)
+        if not all(verified(p) for p in files):
+            raise ValueError("Attached MATLAB files differ from the pinned source hashes")
+        print("Using verified attached original MATLAB files.",flush=True)
         return files
     cache.mkdir(parents=True,exist_ok=True)
     repo=cache/"source"
