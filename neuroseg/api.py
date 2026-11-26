@@ -1,72 +1,117 @@
-import base64
-import io
+import hashlib
+import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-import numpy as np
 import torch
-from PIL import Image,UnidentifiedImageError
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse
+from PIL import Image
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
-from .model import UNet
-from .data import normalize
-
-NOTICE="Research prototype only. Not a diagnostic tool. A predicted empty mask does not rule out disease."
+from .model import load_checkpoint
+from .predictor import predict, LIMIT
+from .monitoring import Monitor
 
 @asynccontextmanager
 async def lifespan(app):
-    app.state.model=None
-    path=Path(os.getenv("NEUROSEG_CHECKPOINT","neuroseg_results/best_unet.pth"))
-    if path.is_file():
-        device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        ck=torch.load(path,map_location=device,weights_only=True)
-        model=UNet(ck["config"]["width"]).to(device)
-        model.load_state_dict(ck["model"],strict=True); model.eval()
-        app.state.model=model; app.state.device=device; app.state.cfg=ck["config"]
-        app.state.info={"epoch":ck["epoch"],"validation_dice":ck["val_dice"]}
+    app.state.models={}
+    app.state.monitor=Monitor()
+    root=Path(os.getenv("NEUROSEG_RESULTS","neuroseg_results"))
+    device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    app.state.device=device
+    paths=[]
+    explicit=os.getenv("NEUROSEG_CHECKPOINT")
+    if explicit: paths.append(Path(explicit))
+    else:
+        paths.append(root/"best_model.pth" if (root/"best_model.pth").exists() else root/"best_unet.pth")
+        if os.getenv("NEUROSEG_LOAD_CANDIDATES","0")=="1":
+            paths.extend(sorted(root.glob("candidates/*/best_unet.pth")))
+    for path in paths:
+        if not path.is_file(): continue
+        model,ck=load_checkpoint(path,device)
+        cfg=ck["config"]
+        key=cfg.get("architecture","unet")
+        # Keep the highest validation-Dice checkpoint per architecture.
+        existing=app.state.models.get(key)
+        if existing and existing[2]["validation_dice"]>=ck["val_dice"]: continue
+        info={"architecture":key,"epoch":ck["epoch"],"validation_dice":ck["val_dice"],
+              "size":cfg["size"],"threshold":cfg.get("threshold",.5),
+              "checkpoint_sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
+        app.state.models[key]=(model,cfg,info)
+    app.state.default=next(iter(app.state.models),None)
+    app.state.report={}
+    app.state.sample_root=Path(__file__).with_name("samples")
+    metrics=root/"test_metrics.json"
+    if metrics.is_file():
+        report=json.loads(metrics.read_text())
+        key=report.get("architecture")
+        if key in app.state.models and report.get("checkpoint_sha256")==app.state.models[key][2]["checkpoint_sha256"]:
+            app.state.report=report
     yield
 
 app=FastAPI(title="NeuroSeg V2",lifespan=lifespan)
-
-def encode(arr):
-    buf=io.BytesIO(); Image.fromarray(arr).save(buf,format="PNG")
-    return base64.b64encode(buf.getvalue()).decode()
-
-def predict(raw):
-    if app.state.model is None: raise HTTPException(503,"Model checkpoint not installed")
-    try:
-        with Image.open(io.BytesIO(raw)) as im:
-            if im.format not in {"PNG","JPEG","TIFF"} or im.width*im.height>16_000_000:
-                raise ValueError("Unsupported format or dimensions")
-            image=np.array(im if im.mode in {"L","I","I;16","F"} else im.convert("L"))
-        norm=normalize(image)
-    except (ValueError,OSError,UnidentifiedImageError,Image.DecompressionBombError):
-        raise HTTPException(400,"Invalid or unsupported MRI image")
-    cfg=app.state.cfg; size=cfg["size"]
-    resized=np.array(Image.fromarray(norm).resize((size,size),Image.Resampling.BILINEAR))
-    x=torch.from_numpy(resized.copy()).float()[None,None].to(app.state.device)/255
-    with torch.inference_mode(): p=app.state.model(x).sigmoid()[0,0].cpu().numpy()
-    mask=Image.fromarray((p>cfg["threshold"]).astype(np.uint8)*255).resize((norm.shape[1],norm.shape[0]),Image.Resampling.NEAREST)
-    mask=np.asarray(mask); overlay=np.repeat(norm[:,:,None],3,axis=2).copy()
-    overlay[mask>0]=(overlay[mask>0]*.55+np.array([255,0,0])*.45).astype(np.uint8)
-    return {"predicted_foreground_area_pct":float((mask>0).mean()*100),"mask_b64":encode(mask),"overlay_b64":encode(overlay),"notice":NOTICE}
+app.mount("/static",StaticFiles(directory=Path(__file__).with_name("static")),name="static")
 
 @app.get("/health")
 def health():
-    return {"ready":app.state.model is not None}
+    return {"ready":bool(app.state.models)}
 
 @app.get("/api/model/info")
 def info():
-    if app.state.model is None: raise HTTPException(503,"Model checkpoint not installed")
-    return app.state.info
+    if not app.state.models: raise HTTPException(503,"Model checkpoint not installed")
+    return {"default":app.state.default,"models":[v[2] for v in app.state.models.values()],
+            **app.state.models[app.state.default][2]}
+
+@app.get("/api/model/performance")
+def performance(architecture:str|None=None):
+    if not app.state.report or (architecture and architecture!=app.state.report.get("architecture")): raise HTTPException(404,"No verified evaluation report for installed checkpoint")
+    return app.state.report
+
+@app.get("/api/samples")
+def samples():
+    manifest=app.state.sample_root/"manifest.json"
+    return json.loads(manifest.read_text()) if manifest.is_file() else {"samples":[]}
+
+@app.get("/api/samples/{sample_id}/{kind}")
+def sample_file(sample_id:str,kind:str):
+    allowed={s["id"] for s in samples()["samples"]}
+    if sample_id not in allowed or kind not in {"image","mask"}:
+        raise HTTPException(404,"Sample unavailable")
+    path=app.state.sample_root/f"{sample_id}_{kind}.png"
+    if not path.is_file(): raise HTTPException(404,"Sample unavailable")
+    return FileResponse(path,media_type="image/png")
+
+@app.get("/api/monitoring")
+def monitoring(): return app.state.monitor.snapshot()
+
+@app.get("/metrics",response_class=PlainTextResponse)
+def metrics(): return app.state.monitor.prometheus()
 
 @app.post("/api/predict")
-async def predict_endpoint(file:UploadFile=File(...)):
-    raw=await file.read(10*1024*1024+1)
-    if len(raw)>10*1024*1024: raise HTTPException(413,"Upload exceeds 10 MB")
-    if not raw: raise HTTPException(400,"Empty file")
-    return await run_in_threadpool(predict,raw)
+async def predict_endpoint(file:UploadFile=File(...),ground_truth:UploadFile|None=File(None),
+                           architecture:str|None=Form(None),source:str=Form("raw")):
+    started=time.perf_counter()
+    ok=False
+    try:
+        key=architecture or app.state.default
+        if key not in app.state.models: raise HTTPException(503,"Requested model is not installed")
+        raw=await file.read(LIMIT+1)
+        gt=await ground_truth.read(LIMIT+1) if ground_truth else None
+        if len(raw)>LIMIT or (gt is not None and len(gt)>LIMIT): raise HTTPException(413,"Each upload must be 10 MB or less")
+        if not raw or (gt is not None and not gt): raise HTTPException(400,"Empty file")
+        model,cfg,model_info=app.state.models[key]
+        try:
+            result=await run_in_threadpool(predict,model,cfg,app.state.device,raw,source,gt)
+        except (ValueError,OSError,Image.DecompressionBombError) as exc:
+            raise HTTPException(400,str(exc)) from exc
+        ok=True
+        return {**result,"model":model_info,"request_ms":(time.perf_counter()-started)*1000}
+    finally:
+        app.state.monitor.observe(time.perf_counter()-started,ok)
+        await file.close()
+        if ground_truth: await ground_truth.close()
 
 @app.get("/",response_class=HTMLResponse)
 def home():

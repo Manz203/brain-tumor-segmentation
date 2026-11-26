@@ -3,6 +3,9 @@ WORKDIR /app
 COPY requirements-v2.txt .
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu && pip install --no-cache-dir -r requirements-v2.txt
 COPY neuroseg ./neuroseg
-ENV NEUROSEG_CHECKPOINT=/models/best_unet.pth
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+ENV NEUROSEG_RESULTS=/models
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=4).read()"
 CMD ["uvicorn","neuroseg.api:app","--host","0.0.0.0","--port","8000"]

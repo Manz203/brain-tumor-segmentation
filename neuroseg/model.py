@@ -51,3 +51,18 @@ def scores(logits,target,threshold=0.5):
     return {"dice":ratio(2*tp,2*tp+fp+fn),"iou":ratio(tp,tp+fp+fn),
             "precision":torch.where(tp+fp>0,tp/(tp+fp).clamp_min(1),torch.zeros_like(tp)),
             "recall":ratio(tp,tp+fn),"specificity":ratio(tn,tn+fp)}
+
+def build_model(architecture="unet", width=32):
+    if architecture == "unet":
+        return UNet(width)
+    if architecture == "attention_unet":
+        from .attention_unet import AttentionUNet
+        return AttentionUNet(width)
+    raise ValueError(f"Unknown architecture: {architecture}")
+
+def load_checkpoint(path, device="cpu"):
+    ck = torch.load(path, map_location="cpu", weights_only=True)
+    cfg = ck["config"]
+    model = build_model(cfg.get("architecture", "unet"), cfg["width"])
+    model.load_state_dict(ck["model"], strict=True)
+    return model.to(device).eval(), ck

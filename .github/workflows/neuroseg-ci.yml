@@ -6,6 +6,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -13,4 +16,27 @@ jobs:
           python-version: '3.11'
       - run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements-v2.txt
+      - run: python -m compileall -q neuroseg tests
       - run: python -m pytest -q tests
+      - run: pip freeze > tested-dependencies.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tested-dependencies
+          path: tested-dependencies.txt
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f Dockerfile.v2 -t neuroseg-ci .
+      - name: Container smoke test (no real checkpoint)
+        run: |
+          docker run -d --name neuroseg-ci -p 127.0.0.1:8000:8000 neuroseg-ci
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8000/health | python -c 'import json,sys; assert json.load(sys.stdin)=={"ready":False}'
+          curl -fsS http://127.0.0.1:8000/ > /dev/null
+          curl -fsS http://127.0.0.1:8000/static/styles.css > /dev/null
+      - if: always()
+        run: docker logs neuroseg-ci || true
